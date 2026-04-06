@@ -64,7 +64,7 @@ Report SAP  ──┘
 
 ## 🔮 Próximos Passos
 
-- [ ] Integrar janelas de recebimento futuras ao banco — o agente passará a informar não só o status dos recebimentos, mas a previsão de chegada do material conforme a necessidade do cliente
+- [ ] Integrar janelas de recebimento futuras ao banco o agente passará a informar não só o status dos recebimentos, mas a previsão de chegada do material conforme a necessidade do cliente
 - [ ] Interface web simples para o cliente consultar sem precisar do terminal
 - [ ] Histórico de consultas e log de respostas do agente
 
