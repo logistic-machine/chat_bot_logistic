@@ -1,0 +1,234 @@
+import os
+import sqlite3
+import json
+import anthropic
+
+DB_PATH = "Nome do seu banco de dados"
+
+def consultar_nf(nr_nfe: str) -> str:
+    """Busca todos os itens de uma NF pelo número."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT nr_nfe, nome_fornecedor, cnpj_fornecedor, pedido_compras,
+               desc_material, cod_material, valor_total, qtd_recebida,
+               data_documento, data_recebimento, ultima_etapa, depositante
+        FROM notas_fiscais
+        WHERE nr_nfe = ?
+    """, (nr_nfe,)).fetchall()
+    conn.close()
+    if not rows:
+        return json.dumps({"erro": f"NF {nr_nfe} não encontrada."})
+    return json.dumps([dict(r) for r in rows], ensure_ascii=False, default=str)
+
+
+def consultar_pedido(pedido: str) -> str:
+    """Busca NFs pelo número do pedido de compras."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT nr_nfe, nome_fornecedor, pedido_compras, desc_material,
+               valor_total, qtd_recebida, data_recebimento,
+               ultima_etapa, depositante
+        FROM notas_fiscais
+        WHERE pedido_compras = ?
+    """, (pedido,)).fetchall()
+    conn.close()
+    if not rows:
+        return json.dumps({"erro": f"Pedido {pedido} não encontrado."})
+    return json.dumps([dict(r) for r in rows], ensure_ascii=False, default=str)
+
+
+def consultar_fornecedor(nome_ou_cnpj: str) -> str:
+    """Busca NFs pelo nome ou CNPJ do fornecedor."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    termo = f"%{nome_ou_cnpj}%"
+    rows = conn.execute("""
+        SELECT nr_nfe, nome_fornecedor, cnpj_fornecedor, pedido_compras,
+               desc_material, valor_total, data_recebimento,
+               ultima_etapa, depositante
+        FROM notas_fiscais
+        WHERE nome_fornecedor LIKE ? OR cnpj_fornecedor LIKE ?
+        LIMIT 50
+    """, (termo, termo)).fetchall()
+    conn.close()
+    if not rows:
+        return json.dumps({"erro": f"Fornecedor '{nome_ou_cnpj}' não encontrado."})
+    return json.dumps([dict(r) for r in rows], ensure_ascii=False, default=str)
+
+
+def listar_pendentes(depositante: str = "") -> str:
+    """Lista NFs que ainda não concluíram o processo, filtrando por CD se informado."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    etapas_pendentes = (
+        "Nota fiscal não concluida",
+        "Simular fatura e NF-e",
+        "Lançar fatura e NF-e",
+        "Atribuir itens do pedido",
+        "Verificar autorização após entrada NF-e",
+        "Verificar autorização após entrada DANFE",
+        "Registrar entrada de mercadorias",
+    )
+    placeholders = ",".join("?" * len(etapas_pendentes))
+    params = list(etapas_pendentes)
+    filtro = ""
+    if depositante:
+        filtro = f"AND depositante LIKE ?"
+        params.append(f"%{depositante}%")
+    rows = conn.execute(f"""
+        SELECT nr_nfe, nome_fornecedor, pedido_compras, desc_material,
+               valor_total, data_recebimento, ultima_etapa, depositante
+        FROM notas_fiscais
+        WHERE ultima_etapa IN ({placeholders}) {filtro}
+        ORDER BY data_recebimento
+        LIMIT 100
+    """, params).fetchall()
+    conn.close()
+    if not rows:
+        return json.dumps({"mensagem": "Nenhuma NF pendente encontrada."})
+    return json.dumps([dict(r) for r in rows], ensure_ascii=False, default=str)
+
+TOOLS = [
+    {
+        "name": "consultar_nf",
+        "description": "Busca informações detalhadas de uma Nota Fiscal pelo número da NF-e. Use quando o usuário perguntar sobre uma NF específica.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nr_nfe": {"type": "string", "description": "Número da NF-e"}
+            },
+            "required": ["nr_nfe"]
+        }
+    },
+    {
+        "name": "consultar_pedido",
+        "description": "Busca NFs associadas a um número de pedido de compras (PO). Use quando o usuário perguntar sobre um pedido.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pedido": {"type": "string", "description": "Número do pedido de compras"}
+            },
+            "required": ["pedido"]
+        }
+    },
+    {
+        "name": "consultar_fornecedor",
+        "description": "Busca NFs de um fornecedor pelo nome ou CNPJ.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nome_ou_cnpj": {"type": "string", "description": "Nome ou CNPJ do fornecedor"}
+            },
+            "required": ["nome_ou_cnpj"]
+        }
+    },
+    {
+        "name": "listar_pendentes",
+        "description": "Lista todas as NFs com processo ainda não concluído. Pode filtrar por centro de distribuição (CD).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "depositante": {"type": "string", "description": "Nome do CD/depositante para filtrar (opcional)"}
+            },
+            "required": []
+        }
+    }
+]
+
+SYSTEM_PROMPT = """Você é um assistente especializado em consultas de Notas Fiscais recebidas nos centros de distribuição.
+
+Seu papel é responder perguntas sobre:
+- Status de notas fiscais recebidas
+- Pedidos de compra e seus materiais
+- Situação de fornecedores
+- NFs pendentes por centro de distribuição
+
+Sempre que precisar de dados, use as ferramentas disponíveis para consultar o banco.
+Responda de forma clara e objetiva, destacando o status da NF e qualquer pendência encontrada.
+Responda sempre em português brasileiro."""
+
+
+def executar_tool(nome: str, inputs: dict) -> str:
+    if nome == "consultar_nf":
+        return consultar_nf(inputs["nr_nfe"])
+    elif nome == "consultar_pedido":
+        return consultar_pedido(inputs["pedido"])
+    elif nome == "consultar_fornecedor":
+        return consultar_fornecedor(inputs["nome_ou_cnpj"])
+    elif nome == "listar_pendentes":
+        return listar_pendentes(inputs.get("depositante", ""))
+    return json.dumps({"erro": "Ferramenta desconhecida."})
+
+
+def perguntar(cliente: anthropic.Anthropic, historico: list, pergunta: str) -> str:
+    historico.append({"role": "user", "content": pergunta})
+
+    while True:
+        resposta = cliente.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            tools=TOOLS,
+            messages=historico
+        )
+
+        if resposta.stop_reason == "tool_use":
+            # Adiciona a resposta do assistente ao histórico
+            historico.append({"role": "assistant", "content": resposta.content})
+
+            resultados = []
+            for bloco in resposta.content:
+                if bloco.type == "tool_use":
+                    print(f"  [consultando: {bloco.name}({bloco.input})]")
+                    resultado = executar_tool(bloco.name, bloco.input)
+                    resultados.append({
+                        "type": "tool_result",
+                        "tool_use_id": bloco.id,
+                        "content": resultado
+                    })
+
+            historico.append({"role": "user", "content": resultados})
+
+        else:
+            texto = next(
+                (b.text for b in resposta.content if hasattr(b, "text")), ""
+            )
+            historico.append({"role": "assistant", "content": texto})
+            return texto
+
+
+def main():
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("Erro: variável ANTHROPIC_API_KEY não encontrada.")
+        print("Execute: setx ANTHROPIC_API_KEY \"sua-chave-aqui\" e reabra o terminal.")
+        return
+
+    if not os.path.exists(DB_PATH):
+        print(f"Erro: banco '{DB_PATH}' não encontrado na pasta atual.")
+        print("Rode primeiro: python importar_nf_simples.py seu_arquivo.xlsx")
+        return
+
+    cliente = anthropic.Anthropic(api_key=api_key)
+    historico = []
+
+    print("=" * 55)
+    print("  Agente de Notas Fiscais — digite 'sair' para encerrar")
+    print("=" * 55)
+
+    while True:
+        pergunta = input("\nVocê: ").strip()
+        if not pergunta:
+            continue
+        if pergunta.lower() in ("sair", "exit", "quit"):
+            print("Encerrando agente.")
+            break
+
+        resposta = perguntar(cliente, historico, pergunta)
+        print(f"\nAgente: {resposta}")
+
+
+if __name__ == "__main__":
+    main()
