@@ -1,0 +1,45 @@
+
+import sys
+import sqlite3
+import pandas as pd
+
+DB_PATH = "Nome para seu banco de dados"
+
+def importar(xlsx_path: str):
+    print(f"Importando: {xlsx_path}")
+
+    df_nf = pd.read_excel(xlsx_path, sheet_name='Notas Fiscais Recebidas', header=3, usecols=range(1, 14))
+    df_nf.columns = [
+        'nr_nfe', 'chave_acesso', 'data_documento', 'ultima_etapa',
+        'pedido_compras', 'nome_fornecedor', 'cnpj_fornecedor',
+        'cod_material', 'desc_material', 'valor_total',
+        'qtd_recebida', 'data_recebimento', 'depositante'
+    ]
+    df_nf = df_nf.dropna(subset=['nr_nfe'])
+    df_nf['nr_nfe']           = df_nf['nr_nfe'].astype(str)
+    df_nf['pedido_compras']   = df_nf['pedido_compras'].astype(str)
+    df_nf['chave_acesso']     = df_nf['chave_acesso'].astype(str)
+    df_nf['cnpj_fornecedor']  = df_nf['cnpj_fornecedor'].astype(str)
+    df_nf['cod_material']     = df_nf['cod_material'].astype(str)
+    df_nf['data_documento']   = pd.to_datetime(df_nf['data_documento'],   errors='coerce').dt.strftime('%Y-%m-%d')
+    df_nf['data_recebimento'] = pd.to_datetime(df_nf['data_recebimento'], errors='coerce').dt.strftime('%Y-%m-%d')
+
+    conn = sqlite3.connect(DB_PATH)
+    df_nf.to_sql('notas_fiscais', conn, if_exists='replace', index=False)
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nf_nr   ON notas_fiscais(nr_nfe)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nf_po   ON notas_fiscais(pedido_compras)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nf_cnpj ON notas_fiscais(cnpj_fornecedor)")
+    conn.commit()
+    conn.close()
+
+    print("Importação concluída!")
+    print(f"  notas_fiscais : {len(df_nf)} registros")
+    print(f"  banco salvo em: {DB_PATH}")
+
+if __name__ == "__main__":
+    path = sys.argv[1] if len(sys.argv) > 1 else None
+    if not path:
+        print("Uso: python importar_nf_simples.py arquivo.xlsx")
+        sys.exit(1)
+    importar(path)
